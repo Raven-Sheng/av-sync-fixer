@@ -1,0 +1,3 @@
+# CLI / 核心仅使用 Python 3.11+ 标准库；桌面 GUI 使用 PySide6。
+# FFmpeg / ffprobe 是外部可执行程序，需单独准备。
+PySide6>=6.8,<7
