@@ -15,6 +15,43 @@ from app.fixer import REPAIR_MODES, fix_video
 from tests.media_helpers import frame_times, generate_media
 
 
+def test_native_aac_rate_capabilities_match_expected_output_policy():
+    from app.repair_plan import AAC_SAMPLE_RATES
+    try:
+        ffmpeg = find_tool("ffmpeg")
+    except MediaError as exc:
+        pytest.skip(str(exc))
+    result = subprocess.run([ffmpeg, "-hide_banner", "-h", "encoder=aac"],
+                            capture_output=True, text=True, check=True, timeout=10)
+    line = next(line for line in (result.stdout + result.stderr).splitlines() if "Supported sample rates:" in line)
+    assert tuple(map(int, line.split(":", 1)[1].split())) == AAC_SAMPLE_RATES
+
+
+@pytest.mark.parametrize("sample_rate,expected_rate", [(192000, 96000), (10000, 11025), (46050, 48000)])
+def test_general_encoder_rate_policy_matches_output_spec(tmp_path, sample_rate, expected_rate):
+    from app.fixer import prepare_fix
+    try:
+        ffmpeg = find_tool("ffmpeg")
+        find_tool("ffprobe")
+    except MediaError as exc:
+        pytest.skip(str(exc))
+    path = tmp_path / "中文 非标准采样率.nut"
+    subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-n", "-f", "lavfi", "-i",
+        "testsrc2=size=160x90:rate=30:duration=2", "-f", "lavfi", "-i",
+        f"sine=sample_rate={sample_rate}:duration=2", "-c:v", "libx264", "-preset", "ultrafast",
+        "-color_range", "tv", "-bsf:v", "h264_metadata=video_full_range_flag=0",
+        "-c:a", "pcm_s16le", str(path)], capture_output=True, check=True, timeout=30)
+    before = analyze(path)
+    original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    plan = prepare_fix(before, tmp_path / "out")
+    assert "-ar" not in plan.command
+    result = fix_video(before, tmp_path / "out")
+    assert result.after.audios[0].sample_rate == expected_rate
+    assert plan.expected.audios[0].sample_rate == expected_rate
+    assert not result.validation.errors
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
+
+
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     try:
@@ -44,7 +81,7 @@ def media(tmp_path_factory):
     paths = {}
     for name, options in cases.items():
         path = directory / f"中文 空格 🎬 {name}.mp4"
-        generate_media(ffmpeg, path, [*options, "-c:v", "libx264", "-c:a", "aac"])
+        generate_media(ffmpeg, path, [*options, "-c:v", "libx264", "-color_range", "tv", "-bsf:v", "h264_metadata=video_full_range_flag=0", "-c:a", "aac"])
         paths[name] = path
     return paths
 
@@ -172,7 +209,7 @@ def test_multiple_video_tracks_keep_first_video_and_all_audio(media, tmp_path):
         "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=2",
         "-f", "lavfi", "-i", "sine=sample_rate=44100:duration=2",
         "-map", "0:v", "-map", "0:a", "-map", "1:v", "-map", "2:a",
-        "-c:v", "libx264", "-c:a", "aac",
+        "-c:v", "libx264", "-color_range", "tv", "-bsf:v", "h264_metadata=video_full_range_flag=0", "-c:a", "aac",
     ])
     original_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
     before = analyze(source_path)
@@ -269,7 +306,7 @@ def test_timestamp_removes_leading_negative_dts_and_keeps_relative_offset(media,
 def test_audio_sync_does_not_force_matching_track_lengths(media, tmp_path, name, mode):
     before = analyze(media[name])
     result = fix_video(before, tmp_path / "output", mode=mode)
-    assert result.strategy.audio_sync_tracks == (0,)
+    assert result.strategy.audio_sync_tracks == ((0,) if mode == "audio-sync" else ())
     assert result.after.audios[0].duration == pytest.approx(before.audios[0].duration, abs=0.05)
     assert abs(result.after.audios[0].duration - result.after.videos[0].duration) > 0.5
 
@@ -278,7 +315,7 @@ def test_safe_combines_strategies_for_real_risks(media, tmp_path):
     before = analyze(media["combined"])
     result = fix_video(before, tmp_path / "output")
     assert result.strategy.cfr and result.strategy.timestamp
-    assert result.strategy.audio_sync_tracks == (0,)
+    assert result.strategy.audio_sync_tracks == ()  # Length difference alone is not clock-drift evidence.
     times = frame_times(result.after.path)
     assert all(b - a == pytest.approx(1 / result.target_fps, abs=2e-6) for a, b in zip(times, times[1:]))
     assert result.after.audios[0].duration == pytest.approx(before.audios[0].duration, abs=0.05)
@@ -302,7 +339,7 @@ def test_audio_sync_corrects_accumulating_pts_gap_without_pitch_shift(media, tmp
         find_tool("ffmpeg"), "-v", "error", "-nostdin", "-n",
         "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=6.3",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=6",
-        "-af", "asetpts=1.05*PTS", "-c:v", "libx264", "-c:a", "pcm_s16le", str(source),
+        "-af", "asetpts=1.05*PTS", "-c:v", "libx264", "-color_range", "tv", "-bsf:v", "h264_metadata=video_full_range_flag=0", "-c:a", "pcm_s16le", str(source),
     ], capture_output=True, check=True, timeout=30)
     original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     original = decoded_samples(source)

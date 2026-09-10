@@ -85,7 +85,9 @@ def test_unicode_space_and_leading_dash_path(tmp_path, monkeypatch):
     command, kwargs = calls[0]
     assert command[-1] == str(media.resolve())
     assert command == ["ffprobe", "-v", "quiet", "-print_format", "json",
-                       "-show_format", "-show_streams", str(media.resolve())]
+                       "-show_format", "-show_streams", "-show_frames", "-read_intervals", "%+#32",
+                       "-show_entries", "frame=stream_index,color_transfer:frame_side_data=side_data_type",
+                       str(media.resolve())]
     assert not kwargs.get("shell", False)
     assert kwargs["timeout"] == 60
     assert media.read_bytes() == b"source unchanged"

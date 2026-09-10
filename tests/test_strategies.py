@@ -3,6 +3,8 @@
 from dataclasses import replace
 from pathlib import Path
 
+from tests.mp4_stub import MP4_STUB
+
 import pytest
 
 from app.analyzer import parse_analysis
@@ -12,7 +14,7 @@ from app.fixer import prepare_fix, select_strategy, execute_fix
 
 
 def media(video=None, audio=None, *, audio_tracks=None):
-    tracks = [{"codec_type": "video", "index": 0, "codec_name": "h264", "avg_frame_rate": "30", "r_frame_rate": "30", "duration": "10", "start_time": "0", **(video or {})}]
+    tracks = [{"codec_type": "video", "index": 0, "codec_name": "h264", "pix_fmt": "yuv420p", "color_range": "tv", "avg_frame_rate": "30", "r_frame_rate": "30", "duration": "10", "start_time": "0", **(video or {})}]
     tracks.extend(audio_tracks if audio_tracks is not None else [
         {"codec_type": "audio", "index": 1, "codec_name": "aac", "duration": "10", "start_time": "0", **(audio or {})},
     ])
@@ -41,12 +43,12 @@ def test_explicit_modes_only_enable_requested_parameters(mode, has_fps, has_time
 @pytest.mark.parametrize("video, audio, expected", [
     ({}, {}, (False, False, ())),
     ({"avg_frame_rate": "59.27", "r_frame_rate": "60"}, {}, (True, False, ())),
-    ({}, {"duration": "10.2"}, (False, False, (0,))),
+    ({}, {"duration": "10.2"}, (False, False, ())),
     ({}, {"duration": "10.199"}, (False, False, ())),
     ({"start_time": "-0.1"}, {}, (False, True, ())),
     ({}, {"start_time": "0.3"}, (False, True, ())),
     ({"start_time": None}, {}, (False, True, ())),
-    ({"avg_frame_rate": "59.27", "r_frame_rate": "60", "start_time": "-0.1"}, {"duration": "10.5"}, (True, True, (0,))),
+    ({"avg_frame_rate": "59.27", "r_frame_rate": "60", "start_time": "-0.1"}, {"duration": "10.5"}, (True, True, ())),
     ({"avg_frame_rate": "60000/1001", "r_frame_rate": "60"}, {}, (False, False, ())),
     ({"avg_frame_rate": "0/0", "r_frame_rate": "N/A", "duration": None}, {"duration": None}, (False, False, ())),
 ])
@@ -56,24 +58,22 @@ def test_safe_dynamic_strategy(video, audio, expected):
     assert result.reasons
 
 
-def test_safe_only_syncs_audio_tracks_with_length_risk():
+def test_safe_does_not_sync_audio_tracks_from_length_risk_alone():
     source = media(audio_tracks=[
         {"codec_type": "audio", "index": 3, "duration": "10", "start_time": "0"},
         {"codec_type": "audio", "index": 5, "duration": "11", "start_time": "0"},
         {"codec_type": "audio", "index": 6, "start_time": "0"},
     ])
     strategy = select_strategy(source)
-    assert strategy.audio_sync_tracks == (1,)
+    assert strategy.audio_sync_tracks == ()
     command = command_for(source, "safe")
-    assert "aresample" not in command[command.index("-filter:a:0") + 1]
-    assert "aresample" in command[command.index("-filter:a:1") + 1]
-    assert "aresample" not in command[command.index("-filter:a:2") + 1]
+    assert not any("aresample" in arg for arg in command)
     assert "0:5" in command
 
 
 def test_audio_async_retains_timestamp_evidence_and_disables_pitch_changing_stretch():
     source = media({"avg_frame_rate": "29", "r_frame_rate": "30"}, {"duration": "11"})
-    command = command_for(source, "safe")
+    command = command_for(source, "audio-sync")
     audio_filter = command[command.index("-filter:a:0") + 1]
     assert "asetpts=PTS-STARTPTS,aresample=async=1:" in audio_filter
     assert "max_soft_comp=0" in audio_filter
@@ -81,7 +81,7 @@ def test_audio_async_retains_timestamp_evidence_and_disables_pitch_changing_stre
     assert "asetrate" not in audio_filter
     assert "atempo" not in audio_filter
     assert "first_pts=0" not in audio_filter
-    assert "fps=fps=" in command[command.index("-vf") + 1]
+    assert "fps=fps=" not in command[command.index("-vf") + 1]
 
 
 def test_timestamp_option_positions():
@@ -126,15 +126,15 @@ def test_prepare_is_pure_and_execution_reuses_preview_arguments(tmp_path, monkey
     plan = prepare_fix(source, tmp_path / "output", mode="cfr")
     assert not plan.output_path.parent.exists()
     observed = []
-    def encode(command, callback):
+    def encode(command, callback, **kwargs):
         observed.append(command)
-        Path(command[-1]).write_bytes(b"encoded")
+        Path(command[-1]).write_bytes(MP4_STUB)
     monkeypatch.setattr("app.fixer.run_ffmpeg", encode)
-    monkeypatch.setattr("app.fixer.analyze", lambda path: replace(source, path=path))
+    monkeypatch.setattr("app.fixer.analyze", lambda path: replace(source, path=path, container="mp4", major_brand="isom"))
     result = execute_fix(plan)
     assert tuple(observed[0][:-1]) == plan.command[:-1]
     assert observed[0][-1] != str(plan.output_path)
-    assert result.after.path.read_bytes() == b"encoded"
+    assert result.after.path.read_bytes() == MP4_STUB
 
 
 @pytest.mark.parametrize("mode", ["safe", "cfr", "timestamp", "audio-sync"])

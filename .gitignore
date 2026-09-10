@@ -5,6 +5,7 @@ __pycache__/
 tmp/
 tools/ffmpeg/
 samples/*
+samples/private/
 !samples/.gitkeep
 output/*
 !output/.gitkeep

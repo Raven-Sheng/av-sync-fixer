@@ -4,6 +4,8 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+from tests.mp4_stub import MP4_STUB
+
 import pytest
 
 from app.analyzer import parse_analysis
@@ -21,7 +23,8 @@ def source(tmp_path, monkeypatch):
     return parse_analysis(path, {
         "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": {"major_brand": "isom"}},
         "streams": [
-            {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p", "index": 0,
+            {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p", "color_range": "tv", "index": 0,
+             "color_space": "bt709", "color_transfer": "bt709", "color_primaries": "bt709",
              "width": 160, "height": 90, "avg_frame_rate": "30/1", "r_frame_rate": "60/2",
              "start_time": "0", "duration": "2"},
             {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "index": 1,
@@ -68,9 +71,9 @@ def test_bilibili_safe_selects_only_diagnosed_audio_and_timestamp_repairs(source
     source = replace(source, audios=(source.audios[0], replace(source.audios[0], index=2, duration=2.8, start_time=0.3)))
     plan = prepare_fix(source, tmp_path / "out", preset="bilibili")
     assert plan.strategy.cfr and plan.strategy.timestamp
-    assert plan.strategy.audio_sync_tracks == (1,)
+    assert plan.strategy.audio_sync_tracks == ()
     assert "aresample" not in plan.command[plan.command.index("-filter:a:0") + 1]
-    assert "aresample=async" in plan.command[plan.command.index("-filter:a:1") + 1]
+    assert "aresample" not in plan.command[plan.command.index("-filter:a:1") + 1]
     assert plan.command.count("-ar") == 1  # 全部输出音轨适用。
 
 
@@ -166,7 +169,8 @@ def test_silent_input_stays_silent_and_passes(source, tmp_path):
 
 
 @pytest.mark.parametrize("duration,warning", [(2.04, False), (2.199, False), (2.2, True), (2.8, True), (1.2, True), (None, True)])
-def test_length_difference_warns_without_rejecting_encoding(source, tmp_path, duration, warning):
+def test_existing_length_difference_warns_without_rejecting_encoding(source, tmp_path, duration, warning):
+    source = replace(source, audios=(replace(source.audios[0], duration=duration),))
     plan = prepare_fix(source, tmp_path / "out", preset="bilibili")
     after = replace(source, audios=(replace(source.audios[0], duration=duration),))
     result = validate_bilibili_output(plan, after)
@@ -180,14 +184,14 @@ def test_length_difference_warns_without_rejecting_encoding(source, tmp_path, du
 def test_timestamp_risks_remain_explicit(source, tmp_path, start):
     plan = prepare_fix(source, tmp_path / "out", preset="bilibili")
     result = validate_bilibili_output(plan, replace(source, audios=(replace(source.audios[0], start_time=start),)))
-    assert result.warnings and not result.errors
+    assert (bool(result.errors), bool(result.warnings)) == ((False, True) if start is None else (True, False))
 
 
 @pytest.mark.parametrize("valid", [True, False])
 def test_verification_report_precedes_publish_or_rejection(source, tmp_path, monkeypatch, valid):
     plan = prepare_fix(source, tmp_path / "out", preset="bilibili")
-    def encode(command, callback):
-        Path(command[-1]).write_bytes(b"encoded")
+    def encode(command, callback, **kwargs):
+        Path(command[-1]).write_bytes(MP4_STUB)
     monkeypatch.setattr("app.fixer.run_ffmpeg", encode)
     monkeypatch.setattr("app.fixer.analyze", lambda path: replace(
         source, path=path, audios=(replace(source.audios[0], sample_rate=48000 if valid else 44100),)))
@@ -197,7 +201,7 @@ def test_verification_report_precedes_publish_or_rejection(source, tmp_path, mon
         reports.append(result)
     if valid:
         result = execute_fix(plan, on_validation=report)
-        assert result.after.path.read_bytes() == b"encoded"
+        assert result.after.path.read_bytes() == MP4_STUB
         assert result.validation.media.path == result.after.path
     else:
         with pytest.raises(MediaError, match="不符合 Bilibili"):
@@ -212,7 +216,7 @@ def test_verification_report_precedes_publish_or_rejection(source, tmp_path, mon
 def test_cli_shows_full_validation_failure_without_traceback(source, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("app.cli.analyze", lambda _: source)
     monkeypatch.setattr("app.fixer.OUTPUT_DIR", tmp_path / "out")
-    monkeypatch.setattr("app.fixer.run_ffmpeg", lambda command, callback: Path(command[-1]).write_bytes(b"bad"))
+    monkeypatch.setattr("app.fixer.run_ffmpeg", lambda command, callback, **kwargs: Path(command[-1]).write_bytes(b"bad"))
     monkeypatch.setattr("app.fixer.analyze", lambda path: replace(source, major_brand="qt"))
     assert main([str(source.path), "--fix", "--preset", "bilibili"]) == 1
     captured = capsys.readouterr()

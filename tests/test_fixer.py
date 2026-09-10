@@ -1,4 +1,8 @@
 from pathlib import Path
+import os
+from dataclasses import replace
+
+from tests.mp4_stub import MP4_STUB
 
 import pytest
 
@@ -24,7 +28,7 @@ def source(tmp_path):
     path = tmp_path / "中文 视频.mp4"
     path.write_bytes(b"original")
     return parse_analysis(path, {"streams": [
-        {"codec_type": "video", "index": 0, "codec_name": "h264", "avg_frame_rate": "30", "r_frame_rate": "30", "duration": "2", "start_time": "0"},
+        {"codec_type": "video", "index": 0, "codec_name": "h264", "pix_fmt": "yuv420p", "color_range": "tv", "avg_frame_rate": "30", "r_frame_rate": "30", "duration": "2", "start_time": "0"},
         {"codec_type": "audio", "index": 1, "codec_name": "aac", "duration": "2", "start_time": "0"},
     ]})
 
@@ -60,8 +64,8 @@ def test_command_rejects_invalid_fps(source, tmp_path, fps):
 
 def mock_encoding(source, monkeypatch):
     monkeypatch.setattr("app.fixer.find_tool", lambda _: "ffmpeg")
-    monkeypatch.setattr("app.fixer.run_ffmpeg", lambda command, callback: Path(command[-1]).write_bytes(b"encoded"))
-    monkeypatch.setattr("app.fixer.analyze", lambda path: source)
+    monkeypatch.setattr("app.fixer.run_ffmpeg", lambda command, callback, **kwargs: Path(command[-1]).write_bytes(MP4_STUB))
+    monkeypatch.setattr("app.fixer.analyze", lambda path: replace(source, path=path, container="mp4", major_brand="isom"))
 
 
 def test_success_publishes_verified_file_and_preserves_source(source, tmp_path, monkeypatch):
@@ -69,11 +73,33 @@ def test_success_publishes_verified_file_and_preserves_source(source, tmp_path, 
     starts = []
     result = fix_video(source, tmp_path / "out", mode="cfr", on_start=lambda *args: starts.append(args))
     assert result.after.path.name == "中文 视频_fixed.mp4"
-    assert result.after.path.read_bytes() == b"encoded"
+    assert result.after.path.read_bytes() == MP4_STUB
     assert source.path.read_bytes() == b"original"
     assert result.target_fps == 30
     assert len(starts) == 1
     assert not list((tmp_path / "out").glob(".avsync-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows exclusive rename semantics")
+def test_windows_publication_does_not_require_hardlinks(source, tmp_path, monkeypatch):
+    mock_encoding(source, monkeypatch)
+    def unavailable(*args):
+        raise OSError("filesystem does not support hard links")
+    monkeypatch.setattr("app.fixer.os.link", unavailable)
+    result = fix_video(source, tmp_path / "输出 空格")
+    assert result.after.path.read_bytes() == MP4_STUB
+    assert source.path.read_bytes() == b"original"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows exclusive rename semantics")
+def test_windows_publication_failure_cleans_staging_without_final_file(source, tmp_path, monkeypatch):
+    mock_encoding(source, monkeypatch)
+    def denied(*args):
+        raise PermissionError("publication denied")
+    monkeypatch.setattr("app.fixer.os.rename", denied)
+    with pytest.raises(MediaError, match="文件操作失败"):
+        fix_video(source, tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_existing_output_not_overwritten(source, tmp_path, monkeypatch):
@@ -97,7 +123,7 @@ def test_concurrent_output_creation_not_overwritten(source, tmp_path, monkeypatc
 @pytest.mark.parametrize("failure", [MediaError("encoder failed"), KeyboardInterrupt()])
 def test_failure_and_cancellation_remove_partial_output(source, tmp_path, monkeypatch, failure):
     mock_encoding(source, monkeypatch)
-    def fail(command, callback):
+    def fail(command, callback, **kwargs):
         Path(command[-1]).write_bytes(b"partial")
         raise failure
     monkeypatch.setattr("app.fixer.run_ffmpeg", fail)

@@ -46,6 +46,20 @@ def test_cli_success(monkeypatch, capsys):
     assert not output.err
 
 
+def test_cli_passes_preset_to_compatibility_without_changing_fix_request(monkeypatch, capsys):
+    info = parse_analysis(Path("test.mp4"), {"streams": [
+        {"codec_type": "video"}, {"codec_type": "audio", "sample_rate": "44100"},
+    ]})
+    monkeypatch.setattr("app.cli.analyze", lambda path: info)
+    calls = []
+    monkeypatch.setattr("app.cli.run_fix", lambda source, **kwargs: calls.append((source, kwargs)))
+    assert main(["test.mp4", "--fix", "--preset", "bilibili", "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "评估预设：bilibili" in output
+    assert "[REPAIR_RECOMMENDED] audio:0 · 音频采样率：44100 Hz" in output
+    assert calls == [(info, {"mode": "safe", "dry_run": True, "preset": "bilibili"})]
+
+
 def test_cli_readable_error(monkeypatch, capsys):
     def fail(path):
         raise MediaError("无法读取视频")

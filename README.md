@@ -1,12 +1,14 @@
 # 音画同步修复器
 
+V2 阶段更新见 [更新日志](CHANGELOG.md)；已验证范围与发布限制见 [V2 Release Readiness Report](V2_RELEASE_READINESS.md)。
+
 本地 Python 视频工具，支持**音画同步风险诊断、多策略修复与 Bilibili 输出预设**，提供命令行和 PySide6 桌面界面。
 输入一个文件，检查 ffmpeg 和 ffprobe 是否能够运行，然后显示文件名、文件大小、容器格式、总时长、视频和音频编码器、分辨率、avg_frame_rate、r_frame_rate、各轨道时长及 time_base、音频采样率。
 
 ## 环境与安装
 
 - Python 3.11+。
-- FFmpeg 和 ffprobe。优先复用 PATH 中的安装；未找到时使用项目内 `tools/ffmpeg/bin/` 下的同名可执行文件（Windows 为 `.exe`）。路径相对于项目位置，与运行时工作目录无关。
+- FFmpeg 和 ffprobe。当前生产审查实际验证的是 **9.0.1 essentials**；建议使用同一发行包中的两者。保持帧率路径使用 `-enc_time_base filter`，命令语法至少需要 FFmpeg **6.1**，这不是对 6.1 及所有更新版本的兼容性认证（[6.0 文档](https://github.com/FFmpeg/FFmpeg/blob/n6.0/doc/ffmpeg.texi)、[6.1 文档](https://github.com/FFmpeg/FFmpeg/blob/n6.1/doc/ffmpeg.texi)）。优先复用 PATH 中的安装；未找到时使用项目内 `tools/ffmpeg/bin/` 下的同名可执行文件（Windows 为 `.exe`）。路径相对于项目位置，与运行时工作目录无关。启动检查只验证工具可运行，不代表全部编码器、滤镜和参数都可用。
 - Windows 使用原生 `.exe`。如果 PATH 命中 `.bat`/`.cmd` 包装器，会寻找原生 `.exe` 或使用项目内工具；无原生工具时明确报错。批处理在 Windows 下可能经 shell 解释文件名，因此执行层也会拒绝它们，依据 [Python subprocess 安全说明](https://docs.python.org/3/library/subprocess.html#security-considerations)。
 - CLI 和核心无需第三方 Python 包；桌面界面需要 PySide6（`requirements.txt`），pytest 仅供开发测试。
 
@@ -57,6 +59,12 @@ python main.py --help
 
 ## 桌面 GUI
 
+选择视频后会显示媒体兼容性摘要（视频编码、尺寸、帧率、像素格式、颜色和全部音轨），并根据当前模式与预设展示核心 RepairPlan 的处理建议。点击“为什么需要修复？”查看原因；完整画像、时间基、PTS/DTS 和计划决定放在默认折叠的“技术详情”。预览仅解释已有元数据，转码前仍由后台线程重新探测；核心拒绝的输入会提前显示原因并禁用开始修复。
+
+修复结果并列显示实际 Before/After，并展示同步、颜色、编码、音频、平台兼容五项验证状态。缺少分项证据显示 NOT TESTED，WARNING 与 FAIL 不会改写为 PASS。同步 PASS 表示时间信息满足输出计划，不证明声音和画面内容对齐。Steam 提示仅在软件/编码器元数据明确提及时显示“可能来自 Steam”，不根据文件名、HEVC 或 Full Range 猜测来源。
+
+轨道列表不完整时，各摘要字段和处理建议会标明信息未知，不直接断言原文件无音轨。已有深度分析结果时，帧率说明会区分抽样帧间隔与元数据 FPS 的证据；抽样没有发现变化也不代表整段已确认 CFR。窗口暂时隐藏不会丢失输出验证失败的状态。
+
 安装依赖后，在项目目录启动：
 
 ```powershell
@@ -66,10 +74,10 @@ python gui.py
 ```
 
 1. 点击“选择视频”，支持 MP4、MKV、MOV、WebM。选择后自动在后台分析。
-2. 摘要显示文件名、分辨率、平均/标称 FPS、疑似 VFR、视频/音频时长、长度差和风险等级。缺失字段显示“未知”，缺失音轨明确提示。
+2. 摘要显示编码、分辨率、平均 FPS、像素格式、颜色和音频。标称 FPS、疑似 VFR、轨道时长、长度差及完整风险依据可在“技术详情”查看。缺失字段显示“未知”，缺失音轨明确提示。
 3. 选择修复模式：**自动 → safe、CFR → cfr、时间戳 → timestamp、音频同步 → audio-sync**。没有音轨时音频同步模式不可执行。
 4. 选择输出预设：**通用 → general（默认）、Bilibili → bilibili**。预设与修复模式可以组合；Bilibili 始终启用 CFR。
-5. 点击“开始修复”，日志显示分析、风险提示、策略依据和转码状态；Bilibili 转码后还显示完整输出验证报告。完成后显示输出路径，可点击“打开文件所在目录”。输出规则与 CLI 相同。
+5. 点击“开始修复”，可在技术详情查看日志；完成后显示实际修复前后对比、五项验证状态及输出路径。完整输出验证报告保留在日志中，可点击“打开文件所在目录”。输出规则与 CLI 相同。
 
 分析、工具检查、FFmpeg 转码和输出复查都在 `QThread.run()` 中调用既有核心，使用 Qt 信号将日志、进度、结果和错误交回主线程；后台线程不访问控件。依据 [Qt QThread 文档](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QThread.html)。修复开始时清除旧诊断并重新分析输入，避免沿用选择文件后已经过时的元数据；重新分析失败时禁用修复按钮，重新选择有效文件后恢复。
 
@@ -83,13 +91,105 @@ python gui.py
 
 - 文件大小来自本地文件状态，以字节和 MiB 显示，不依赖 ffprobe 是否返回 `size`。总时长使用容器 `duration`；缺失时显示“未知”。
 - 编码器一栏展示 ffprobe 的 `codec_name`（如 h264、aac），表示编码格式，不能据此确定原始编码软件。音频采样率使用 `sample_rate`，以 Hz 显示；缺失或无效时显示“未知”。
-- 每条音频、视频轨道单独列出，使用 ffprobe 原始轨道编号；封面图片不计为视频轨道。无音轨或无视频轨时明确显示“无”。
+- 每条音频、视频轨道单独列出，使用 ffprobe 原始轨道编号；视频流总数包含封面，另列可处理视频和封面数量，封面不参与同步诊断与修复。轨道列表完整且无音轨或无视频轨时明确显示“无”；列表信息不足时说明未知。
 - 视频帧率分别显示 `avg_frame_rate` 与 `r_frame_rate`，包含 fps 小数及精确分数。字段缺失、`0/0` 或无效值显示“未知”。两字段不同并不足以确认 VFR。
 - 轨道时长优先读取轨道 `duration`；缺失时尝试 `duration_ts × time_base` 并标注来源。仍不可用时显示“未知”，不使用容器时长代替轨道时长，也不将未知值当作 0。
-- MKV/WebM 等文件可能仅提供容器时长，因此轨道时长显示“未知”是预期行为。当前没有逐帧扫描或从 metadata 标签猜测轨道时长。
+- MKV/WebM 等文件可能仅提供容器时长，因此轨道时长显示“未知”是预期行为。快速模式不逐帧扫描，也不从 metadata 标签猜测轨道时长；深度模式另外报告已扫描的帧时间戳范围。
 - 容器格式可能显示多个别名，例如 `mov,mp4,m4a,3gp,3g2,mj2`，这是 ffprobe 返回的格式名称。
 - 工具启动检查超时为 10 秒，媒体探测超时为 60 秒。损坏、无法读取或超时会输出错误，不向正常用户显示 Python traceback。
 - CLI 不带 `--fix` 时只分析。诊断仅根据元数据提示潜在同步风险，不能确认实际音画不同步；源视频始终不被覆盖。
+
+## V2 第一阶段：输入媒体画像
+
+CLI 的分析报告和 GUI 的处理日志共用 `app/media_profile.py`，展示输入的编码、颜色、帧率、音频和时间信息。直接运行 `python main.py "video.mp4"` 即可查看，不会转码。
+
+本阶段继续使用现有 ffprobe JSON 调用，扩展模型和解析，不改变修复策略、FFmpeg 转码参数或输出验证规则。
+
+| 范围 | 读取的字段 |
+| --- | --- |
+| 视频编码与几何 | `codec_name`、`codec_long_name`、`profile`、`level`、`pix_fmt`、`width`、`height`、`sample_aspect_ratio`、`display_aspect_ratio` |
+| 视频帧率与时间 | `r_frame_rate`、`avg_frame_rate`、`time_base`、`start_pts`、`start_time`、`duration_ts`、`duration`、`nb_frames` |
+| 视频颜色及附加信息 | `color_range`、`color_space`、`color_transfer`、`color_primaries`、`chroma_location`、`bits_per_raw_sample`、`field_order`、`side_data_list` |
+| 音频 | `codec_name`、`profile`、`sample_fmt`、`sample_rate`、`channels`、`channel_layout`、`time_base`、`start_time`、`duration`、`bit_rate` |
+| 容器 | `format_name`、`duration`、`start_time`、`bit_rate`、`tags` |
+| 轨道组织 | 视频/音频数量、字幕、封面、其他流、各轨 `disposition.default`、`tags`、旋转角度及来源 |
+
+为兼容 V1，模型继续用 `codec` 表示 `codec_name`、`pixel_format` 表示 `pix_fmt`、`container` 表示 `format_name`。新增容器属性为 `container_start_time`、`container_bit_rate`，容器和轨道标签保存在 `metadata`。
+
+每个解析字段同时保存 `probe_fields` 证据：`state` 区分以下情况，`raw` 保留原始值，`present` 表示字段是否存在。原有可选类型仍用 `None` 表示没有可用的规范化值，调用方可以进一步检查证据区分原因。
+
+| 状态 | 含义 |
+| --- | --- |
+| `missing` | 字段缺失，未知 |
+| `empty` | 字段存在，但为 `null`、空字符串或空集合 |
+| `unknown` | ffprobe 明确给出 `N/A` / `unknown`；位深字段的 `0` 也表示未指定 |
+| `invalid` | 字段存在但不能按预期类型解析，例如 FPS 为 `0/0` |
+| `value` | 存在有效值，包括合法的零起点、零时长和非默认轨标记 |
+
+例如 `stream.probe_fields["color_range"].raw` 保留原始标记，`stream.color_range_name` 则将 `pc` / `jpeg` 统一显示为 **Full**，将 `tv` / `mpeg` 显示为 **Limited**。这只是输入解释，不执行颜色范围转换，也不根据 `yuvj420p` 猜测缺失的范围标签。
+
+`parse_rational()` 使用 `Fraction` 保存 FPS 和时间基的精确值，兼容 `60000/1001`、`60/1`；零分母、非正值和无效类型不会引发崩溃。宽高比额外接受 `1:1` 等冒号形式。帧率置信度说明当前证据是缺失、只有一个有效字段，还是仅能比较平均/标称 FPS；不会把两字段接近当作 CFR 已确认。
+
+旋转优先读取 Display Matrix 的有效 `rotation`，其次读取旧 `tags.rotate`，保留原始符号及两处原始证据；未提供有效角度时不假定为零。默认轨道标记只展示，不改变 V1 的轨道选择。
+
+轨道列表存在未知、无效或未识别的类型时，不据此断言某类轨道不存在。字幕、视频和音频的缺席判断共用列表完整性检查；已经解析出的字幕仍明确显示存在，空列表或只有已知数据/附件流的完整列表则可以确认没有音视频轨。
+
+元数据可能缺失或标注不准确。原始画像不从像素格式回填缺失位深，不解析码流以确认位深或 HDR，也不通过像素统计确认实际颜色范围；没有逐帧扫描时不能可靠确认 CFR/VFR、丢帧和中途时间戳异常。轨道时长和起点仍不能证明实际内容同步。
+
+## V2 第二阶段：输入兼容性诊断
+
+媒体画像和原有同步报告后追加 **Input Compatibility Report**；GUI 在日志中显示同一份报告，切换输出预设时根据已有画像重新解释，无需再次探测或转码。
+
+职责保持分离：`analyzer` 读取事实，`compatibility` 解释风险，`fixer` 决定转换。新增诊断不被 fixer 或输出 validator 消费，不修改 FFmpeg 参数，也不因为诊断等级自动禁止、开启或组合修复策略。
+
+| 等级 | 含义 |
+| --- | --- |
+| `INFO` | 事实、常见特征或未发现该项明显线索；不表示文件已全面验证通过 |
+| `WARNING` | 信息不足、证据冲突或需要核实的兼容性风险 |
+| `REPAIR_RECOMMENDED` | 建议评估专项处理；不是已实施的修复，也不是必须转换的指令 |
+| `UNSUPPORTED` | 当前处理流程没有相应能力，例如受控 HDR→SDR 或没有可处理视频轨；不代表输入损坏或 FFmpeg 无法解码 |
+
+规则覆盖如下：
+
+| 输入特征 | 诊断解释 |
+| --- | --- |
+| HEVC/H.265、H.264 | 合法常见编码，`INFO`；未运行解码能力测试，未知或其他编码只警告，不直接拒绝 |
+| 8-bit、10-bit 及更高位深 | 8-bit 为 `INFO`，高位深提示当前 8-bit 输出的精度损失；位深证据冲突时 `WARNING` |
+| yuv420p、yuvj420p、4:2:2、4:4:4、RGB 等 | yuv420p 为常见输出格式；其余提示采样/范围/精度兼容性。**yuvj420p 是合法表示，不等于损坏** |
+| Full / Limited Range | Full 为 `REPAIR_RECOMMENDED`，Limited 为 `INFO`；yuvj 与 Limited 标签冲突或范围未知时提醒核实 |
+| BT.709、BT.2020 | 一致 BT.709 矩阵/原色为 `INFO`；BT.2020 提示广色域处理边界，不单独判为 HDR |
+| HDR / SDR 线索 | PQ/HLG 标记提示当前受控 HDR 转换能力 `UNSUPPORTED`；HDR 附加信息而无一致传递标记时仅警告；SDR 传递标记也只是线索 |
+| VFR 风险 | 比较实际平均/标称 FPS，复用 0.1 FPS 容差；明显差异建议评估 CFR，接近不等于确认 CFR |
+| 起点差、时长差 | 每条音轨与第一条非封面视频比较，复用现有阈值；起点差超过 0.05 秒、长度差达到 0.2 秒时建议评估处理 |
+| 负时间戳 | 检查容器/各轨 start_time 及可用 start_pts；负值不等于损坏，未检查中途 PTS/DTS 或负 DTS |
+| 多视频、多音频 | 提醒当前仅输出首条非封面视频、保留全部音轨，以及播放/上传端的音轨选择问题 |
+| 非 48 kHz 音频 | 通用预设警告但保留合法原采样率；Bilibili 预设提示重采样需求 |
+| 非常见声道布局 | mono/stereo 与声道数一致为 `INFO`；缺失、冲突或其他布局为 `WARNING`，5.1/7.1 等仍是合法布局 |
+| 旋转元数据 | 有角度或 Display Matrix 时提醒核对方向；不把缺失角度当作零，也不把单个角度当作完整矩阵变换 |
+
+位深解释只使用有效 `bits_per_raw_sample` 或已知像素格式的分量位深，记录 `source` 和两处证据；不会根据 `Main 10` 字样猜测实际位深，不修改 analyzer 的缺失字段。不能将 RGB24 的每像素 24 位误当作每分量 24-bit。
+
+精度变化按现有输出像素格式的位深评估，并记录目标格式和目标位深：低位深扩展不会被误报为精度降低，也不会增加原始细节；只有输入位深高于目标时才提示降精度风险。目标位深未知时保持警告，不默认按 8-bit 判断。
+
+Full Range 提示的含义是：面向 Limited 输出需显式转换范围，不能只改标签。本阶段新增独立 `ColorConversionPlan` 完成受支持 SDR YUV 输入的范围转换；兼容性诊断仍不直接决定命令。HDR、BT.2020、10-bit、Full Range 是不同特征，不能互相等同。范围/像素格式语义依据 [FFmpeg 像素格式定义](https://ffmpeg.org/doxygen/trunk/pixfmt_8h_source.html)，色调映射属于独立处理，参见 [FFmpeg tonemap 文档](https://ffmpeg.org/ffmpeg-filters.html#tonemap)。
+
+兼容性诊断本身不调用 subprocess，复用已有 `AnalysisResult`。下面示例中只有 `analyze()` 负责探测输入：
+
+```python
+from dataclasses import asdict
+import json
+from app.analyzer import analyze
+from app.compatibility import diagnose_compatibility, format_compatibility_report
+
+source = analyze("video.mp4")
+report = diagnose_compatibility(source, preset="bilibili")
+print(format_compatibility_report(report))
+print(json.dumps(asdict(report), ensure_ascii=False, indent=2))
+```
+
+每项包含 `code`、`severity`、`summary`、`reason`、`evidence`、`scope` 和 `stream_index`。`scope` 使用从零开始的分类内位置（如 `audio:1`），`stream_index` 保留 ffprobe 原始编号；证据保留字段状态和原值，缺失与空值不混淆。不产生单一“通过/不通过”结论。
+
+CLI 不带 `--fix` 时按通用预设解释；原有 `--preset` 仍须配合 `--fix`。需要只查看 Bilibili 相关报告及原有命令预览时，运行 `python main.py "video.mp4" --fix --preset bilibili --dry-run`。本阶段没有新增 CLI 参数。
 
 ## 音画同步诊断
 
@@ -109,7 +209,7 @@ python gui.py
 - 帧率、时长和起始时间阈值均集中定义在 `app/analyzer.py` 顶部。差值通过十进制相减计算；阈值比较还统一使用 `1e-9` 的绝对舍入容差（对应秒或 FPS），将此范围内的差异视为等于阈值，避免分数 FPS 和 `duration_ts × time_base` 转浮点后的舍入误差造成误判。此数值容差与业务风险阈值分别定义。
 - 没有音频/视频轨或轨道时长不足时，长度差及风险等级显示“未知”，不当作低风险。缺失的帧率和起始时间会另行说明。
 - 多轨文件保留全部轨道元数据，诊断只比较第一条非封面视频轨与第一条音频轨，并显示所选轨道编号和范围限制。
-- 长度差可能源于尾部长度不同，起始偏移可能为固定偏移。当前没有逐帧时间戳扫描或声音与画面内容比对，因此不能仅凭这些线索确认累计漂移；低长度差风险也不保证实际播放同步。
+- 长度差可能源于尾部长度不同，起始偏移可能为固定偏移。快速模式不扫描帧/包时间戳；可使用 `--deep-analysis`，但仍没有声音与画面内容比对，因此不能仅凭元数据线索确认累计漂移；低长度差风险也不保证实际播放同步。
 
 调用方式依据 [ffprobe 官方文档](https://ffmpeg.org/ffprobe.html)，通过 `subprocess.run` 传入参数列表，不经过 shell 拼接：
 
@@ -142,7 +242,7 @@ python main.py "video.mp4" --fix --mode audio-sync --dry-run
 ### safe 的选择规则
 
 - 第一条非封面视频轨疑似 VFR（实际 FPS 差大于 0.1）：开启 CFR。
-- 每条音轨分别与所选视频比较；已知长度差达到 **0.2 秒**时，仅为该音轨开启 audio-sync。复用 analyzer 的阈值和比较函数；长度差只是启用检查的线索，并不是音频拉伸比例。
+- 长度差只用于风险提示，不再据此自动开启 async。只有 `--deep-analysis` 提供完整、稳定且不超过 **500 ppm** 的 PTS／采样时钟漂移证据时，才为对应音轨选择有限软补偿。
 - 所选轨道存在负起点、起点缺失，或音视频起点差大于 0.05 秒：开启 timestamp。起点不同可能是正常剪辑偏移，保留已知相对偏移，不盲目对齐声音内容。
 - 信息未知时不凭空判断 VFR 或长度差；相关限制会显示在报告中。只有多个条件同时触发时才组合多个策略，不会始终加入全部参数。
 
@@ -165,7 +265,7 @@ python main.py "video.mp4" --fix --mode audio-sync --dry-run
 
 ### audio-sync 的处理边界
 
-使用 `aresample=async=1:min_hard_comp=0.1:max_soft_comp=0`，常量集中在 `app/ffmpeg_utils.py`：
+未提供深度分析时，显式 `audio-sync` 沿用 `aresample=async=1:min_hard_comp=0.1:max_soft_comp=0`，常量集中在 `app/ffmpeg_utils.py`。已有深度证据时，`audio-sync` 和 safe 一样遵守下文的微小补偿门槛，不能通过切换模式绕过证据不足或较大漂移限制。旧参数的用途是：
 
 - 保留输入音频 PTS 间隔供滤镜与采样数比较，不在滤镜前用 `asetpts=N/SR/TB` 抹掉偏差。
 - `async=1` 采用补静音/裁重叠；禁用软伸缩，不使用 `asetrate` 或按两轨总时长计算变速比例。保留声音片段的音调，但较大的缺口/重叠修补可能可闻，AAC 转码本身也有损。
@@ -200,16 +300,23 @@ python main.py "input.mp4" --fix --mode timestamp --preset bilibili
 
 ### 转码后验证
 
-转码后使用 ffprobe 重新分析临时输出，由 `app/presets.py` 统一验证并生成中文报告；CLI 和 GUI 展示同一份报告：
+V2 在生成 `RepairPlan` 时同步生成不可变的 `ExpectedOutputSpec`，包含目标编码、FPS 策略、像素格式、颜色范围和已知色彩标记、尺寸、逐音轨采样率、时长基线、相对起点、封装及验证容差。`app/output_validation.py` 比较实际输出与该规格；通用和 Bilibili 共享这条验证路径。输入的 HEVC、yuvj420p、Full-range 特征不作为输出失败依据。
 
-- 容器及 `major_brand`（避免把共享格式别名的 MOV 误认成 MP4）。
-- 视频编码、像素格式、分辨率、平均/标称 FPS 和 CFR 目标。
-- 视频时长，以及每条音轨的编码、采样率、时长和与视频的长度差。
-- 不符合项、残留同步风险及验证结论；缺失字段显示“未知”。
+发布前检查文件存在且非空、ffprobe 可读取、视频/音轨数量、编码、像素格式、颜色范围、尺寸、FPS、逐轨采样率和时序。要求 faststart 时，只读取 MP4 顶层 box 头并 seek 跳过媒体数据，检查 `moov` 在 `mdat` 之前；支持 64-bit box size，限制扫描 box 数量，不加载整个视频。
 
-若容器、视频/音频编码、yuv420p、目标 FPS、48 kHz、原分辨率或音轨数量不符合要求，**报告失败且不发布最终文件**，清理临时输出。CFR 由已有 fps 滤镜生成，复查平均/标称 FPS 均匹配目标；生产流程不额外逐帧扫描，元数据验证不能证明声音与画面内容同步。
+通用预设未显式指定 `-ar` 时，规格遵循原生 AAC 编码器的采样率协商：支持的输入率保持，否则选最近的支持值，等距时沿用编码器顺序。例如 192 kHz → 96 kHz、10 kHz → 11.025 kHz；Bilibili 仍明确要求 48 kHz。采样率能力表集中在 `repair_plan.py`，与本机 `ffmpeg -h encoder=aac` 的集成测试对照；没有为通过验证而接受任意采样率。依据 [FFmpeg AAC 采样率表](https://ffmpeg.org/doxygen/2.3/aacenc_8c.html) 和 [采样率协商实现](https://ffmpeg.org/doxygen/trunk/avfiltergraph_8c_source.html)。
 
-轨道长度差仍达到 **0.2 秒**、起始偏移仍大于 **0.05 秒**，或时长/起点未知等，会显示明确的同步风险提示。编码要求通过时仍保留输出；不会使用 `-shortest`、按时长比例拉伸或自动补齐尾部来掩盖差异。报告会区分“编码达标”与“同步风险未消除”，需要播放确认。阈值复用 analyzer 常量。
+验证按 `Video / Audio / Color / Timing / Compatibility` 汇总为 `PASS / WARNING / FAIL`，CLI 和 GUI 展示相同的 `Post Repair Report`，包含实际值、计划要求、容差和不符合项。任一 FAIL 阻止最终文件发布并清理临时输出；WARNING 可发布，但明确列出未确认项。文件缺失或 ffprobe 失败也会先生成失败报告。
+
+- 目标 codec、pix_fmt、采样率、范围不符，或已知颜色标记发生冲突：FAIL。输出只有 yuv420p、却缺少 range 证据，仍不能认定 Limited，必须 FAIL。
+- 输出像素格式和 Limited 范围已确认，但矩阵、传递特性或原色标记缺失：WARNING；不把缺失直接等同于错误，也不声称已经验证像素数值。输入没有指定的颜色体系不会凭空要求 BT.709。
+- 逐轨时长发生明显变化、非正或无效时长、容器时长与输出轨道时间轴明显矛盾：FAIL。时长字段缺失且无法核对：WARNING；明确无效的原始时长或起点字段为 FAIL。两轨同时被截短也不会因为长度差为零而通过。输出容器与输出轨道的一致性独立检查；输入视频时长未知时，若计划省略了其他视频、字幕或数据轨道，不会把完整输入容器长度当作输出长度要求。
+- 音视频长度差比输入明显恶化：FAIL。例如 `0.2 秒 → 3 秒`，即使所有编码字段正确也不发布。原有且未恶化的差异达到 0.2 秒仍为 WARNING，不自动截断或拉伸来隐藏问题。
+- 时间戳验证对照计划的相对起点，允许编码边界误差和 timestamp 模式的共同封装平移；未经计划的相对偏移：FAIL。起点未知：WARNING。
+
+单轨时长容差取 `max(0.1 秒, 两个视频帧间隔, 两个 AAC 帧时长)`；长度差恶化容差在此基础上最多允许 0.5 秒，避免低 FPS 掩盖秒级同步退化。相对起点容差为 0.05–0.1 秒。软补偿计划对音频单轨时长额外允许其计划补偿上限对应的变化，但不放宽长度差恶化检查。所有阈值在规格生成时确定，并显示在报告中。
+
+CFR 复查平均/标称 FPS 均匹配目标；保持帧率模式检查平均 FPS 是否在取整容差内。生产输出验证不额外逐帧解码，不能证明实际画面/声音事件同步，也不能仅凭颜色标签证明像素转换正确；真实 FFmpeg 集成测试继续检查帧间隔、解码像素、音调和内容时长。
 
 预设不会改变输出命名规则：`output/<原文件名>_fixed.mp4`。若已有同名输出，请先自行重命名或移走；程序始终拒绝覆盖。
 
@@ -232,7 +339,7 @@ Windows 命令预览采用 PowerShell 语法（`&` 加单引号参数），其�
 
 输出固定放在**项目根目录**的 `output/<输入文件 stem>_fixed.mp4`，与启动命令所在目录无关。若目标已存在，直接提示并退出，不覆盖，也不自动重复转码。
 
-转码先写到 `output/.avsync-.../` 临时目录，ffprobe 检查通过后用同文件系统硬链接原子发布最终文件，防止并发任务覆盖同名输出。临时目录在成功、失败和 Ctrl+C 取消后清理，失败不会留下冒充成功的最终文件。输出盘须支持硬链接（本项目已在 Windows NTFS 上验证；FAT/exFAT 等不支持时会报错）。大型视频仍需要足够空间存储重新编码后的文件。
+转码先写到 `output/.avsync-.../` 临时目录，输入帧检查及输出复查通过后发布最终文件。Windows 使用同文件系统的 `os.rename`，已有同名目标时包括并发创建均拒绝覆盖，不再要求硬链接；其他系统仍使用排他创建的硬链接。相关行为依据 [Python os.rename 文档](https://docs.python.org/3/library/os.html#os.rename)。本项目实际测试盘为 Windows NTFS，尚未在真实 FAT/exFAT/网络盘上回归；取消对硬链接的依赖不等于认证这些文件系统，FAT32 的文件大小限制仍存在。临时目录在成功、失败和 Ctrl+C 取消后清理，失败不会留下冒充成功的最终文件。强杀/断电可能留下临时目录；大型视频需要足够空间存储重新编码后的文件。
 
 进度使用 FFmpeg 的 `-progress pipe:1`；已知总时长时显示估计百分比，未知时显示已处理秒数。100% 仅在转码、输出复查和发布全部完成后显示。stderr 由独立读取线程持续排空，失败时显示末尾关键内容；Ctrl+C 会停止子进程并清理临时输出。
 
@@ -242,9 +349,41 @@ Windows 命令预览采用 PowerShell 语法（`&` 加单引号参数），其�
 
 修复后时长差可能仍存在，元数据复查通过不代表已确认实际音画同步。HDR 色调映射和其他高级色彩管理不在当前范围内。
 
-### v1 已知兼容问题
+生产审查补充：快速探测在 stream metadata 之外，只解码开头最多 32 个 packet 的有限帧，提取 transfer 和 HDR side-data 类型，避免把只存在于帧 SEI 的 HDR 信息漏掉。抽样原值与 stream 字段分别显示，未观察到不代表全片没有 HDR。转码时使用 `showinfo@avsync_input=checksum=0` 在颜色/CFR 滤镜之前逐帧输出属性，由后台读取线程检查其与 RepairPlan 的一致性；只保存基线、计数和有界日志，不构造全片帧列表、不二次全片解码。发现中途范围、色彩体系、像素格式或尺寸变化，以及 HDR 证据时停止并清理临时输出；记录缺失或无法解析同样不能发布。此检查只核对解码器报告的属性，无法证明错误标记像素的真实颜色，也不测量声音与画面内容是否同步。
 
-部分全范围录屏（例如 ffprobe 显示 `yuvj420p`、`color_range=pc` 的 HEVC 视频）使用 Bilibili 预设时，转码输出仍可能被识别为 `yuvj420p`，随后因预设要求 `yuv420p` 而验证失败，不发布最终文件。当前只设置了输出像素格式，尚未完善颜色范围转换；这一真实素材场景尚未修复，也不在已有 394 项通过测试的覆盖范围内。源文件不会被修改。
+### V2：Full Range / yuvj420p 颜色处理
+
+V1 的 `-pix_fmt yuv420p` 约束像素布局，却没有完整指定数值范围变换和颜色标记。Full 范围可能继续被编码、标记为 `pc`，ffprobe 因而仍报告 `yuvj420p`；原验证器拒绝这种输出是正确的。只把范围标签改成 Limited 也会让播放器用错误的范围解释数值。
+
+现在通用与 Bilibili 预设共同要求 **yuv420p + Limited**。`app/color.py` 根据输入事实选择独立颜色策略；四种同步模式保持原来的选择逻辑，CLI 和 GUI 共用计划与验证报告。
+
+| 输入证据 | 颜色策略 |
+| --- | --- |
+| 已知 Full YUV，包括 `yuvj420p / pc`、`yuv420p / pc` | 显式执行 Full → Limited 数值转换，再同步帧和码流标记 |
+| 已知 Limited，包括 `yuv420p / tv` | 不添加范围转换的 scale，避免重复压缩黑白位；保留正确的 Limited 标记 |
+| 缺失 range，但像素格式为已知 `yuvj*` | 根据该格式的 Full 语义制定转换计划，记录证据来自 pix_fmt；原始画像不回填字段 |
+| 其他未知/无效范围，或 `yuvj* + Limited` 矛盾标签 | 转码前明确停止，不根据分辨率猜测、不默认 Full/Limited；分析功能仍可用 |
+| PQ/HLG、无法可靠处理的颜色标记、未知像素格式或非受支持 YUV 输入（包括 RGB） | 明确停止；Full/Limited 标签均不能代替像素格式检查，不冒充已经完成 HDR 色调映射或 RGB 矩阵转换 |
+
+在本次验证环境 FFmpeg **9.0.1** 中检查了 `scale`、`zscale`、`format`、`setparams` 和 `h264_metadata` 的可用性。此任务不需要色域转换或色调映射，采用 `scale` 显式设置输入/输出范围即可，无需额外依赖 zscale。对于已知 BT.709 Full YUV，颜色部分为：
+
+```text
+scale=w=iw:h=ih:in_range=full:out_range=limited:in_color_matrix=bt709:out_color_matrix=bt709,
+format=yuv420p,
+setparams=range=limited:colorspace=bt709:color_trc=bt709:color_primaries=bt709
+
+-pix_fmt yuv420p -color_range tv
+-colorspace bt709 -color_trc bt709 -color_primaries bt709
+-bsf:v h264_metadata=video_full_range_flag=0
+```
+
+上面的滤镜换行仅方便阅读；真实命令由 builder 生成连续的 `-vf` 参数。`scale` 保持宽高和原有矩阵，只转换范围。8-bit 亮度的 0／128／255 对应约 16／126／235，色度映射到 16～240；播放器依据 Limited 标记正确展开黑白位。范围转换放在通用预设补黑边之前，避免将 Limited 黑边按 Full 再压缩成灰边。依据 [FFmpeg scale 文档](https://www.ffmpeg.org/ffmpeg-filters.html#scale)。
+
+`setparams` 仅同步已经正确处理的帧标签，不转换像素。当前 FFmpeg 的实测表明，只传编码器颜色选项可能丢失帧的原色/传递标签；原色、传递、矩阵均已知时同时传给帧与编码器。若这些标签缺失，保留未知并提示，不编造 BT.709。x264 还可能省略全为默认值的范围 VUI，因此在编码完成后用 `h264_metadata` 明确写入 Limited 范围位；它同样不修改像素、不替代 scale。依据 [setparams 文档](https://www.ffmpeg.org/ffmpeg-filters.html#setparams) 和 [h264_metadata 文档](https://www.ffmpeg.org/ffmpeg-bitstream-filters.html#h264_005fmetadata)。
+
+转码后重新 ffprobe：`pix_fmt` 必须为 `yuv420p`，`color_range` 必须为 `tv`（或等价 Limited 标记）；`color_space`、`color_transfer`、`color_primaries` 必须保留计划中已知的输入值。五项全部显示在输出报告，任何必需标记缺失或不符均拒绝发布并清理临时输出，未放宽验证器。
+
+这些规则解决受支持 SDR 输入的范围转换，不保证修复错误标注的源文件，也不扫描逐帧颜色变化。HDR 色调映射、受控广色域转换、完整 ICC/Dolby Vision 管线尚未实现。高位深 SDR 最终仍为 8-bit；范围量化、色度降采样和 CRF 18 编码有损，不能宣称逐像素无损或对所有播放器绝对色彩一致。
 
 ## 开发与测试
 
@@ -256,6 +395,12 @@ Windows 命令预览采用 PowerShell 语法（`&` 加单引号参数），其�
 ```
 
 单元测试无需安装 FFmpeg；覆盖多轨道、音频长短差、字段缺失、无效帧率、时长换算、FPS 容差、风险阈值边界、负起始时间、缺少音轨、中文和空格路径、缺失工具、执行失败、超时及 CLI 错误展示。集成测试在工具可用时生成短 MP4、MKV、无音轨视频、WAV 及音视频长度不同的样本，验证真实元数据和风险报告、中文/空格/emoji 路径、从其他目录运行、损坏文件报错，以及源文件哈希保持不变；缺少工具时跳过集成测试。pytest 临时文件放在项目的 `tmp/pytest`，该目录仅供测试使用。
+
+V2 输入分析测试位于 `tests/test_media_profile.py` 和 `tests/test_profile_integration.py`，覆盖字段状态及原始值、精确分数解析、颜色范围别名、多轨与默认标记、字幕/封面、旋转来源、缺失位深、帧率置信度，以及无关画像字段不改变四种模式与两种预设生成的命令。真实集成测试在临时目录生成 Full/Limited 两类短 HEVC/AAC 视频，验证颜色标签、编码、帧率、音频和输入哈希；没有工具或 `libx265` 编码器时明确跳过。
+
+范围转换测试位于 `tests/test_color.py` 和 `tests/test_color_integration.py`：生成带已知 Y/U/V 色阶的无损 HEVC Full/Limited 样本，实际经过两种预设重编码，再检查五项颜色元数据和解码后的亮度/色度数值（CRF 18 容差为 3 个码值），覆盖黑位、白位、重复范围压缩、已知范围但缺少色彩体系标签。另有仅改标签的错误对照，证明元数据合格仍可能存在错误像素；测试必须识别该对照。原样本哈希、输出尺寸也会复查。所有视频留在忽略的临时目录，不提交二进制。
+
+兼容性规则测试位于 `tests/test_compatibility.py`，覆盖上述风险、阈值边界、空/无效字段、标签冲突、多轨定位，以及诊断前后输入模型、策略和命令不变。CLI/GUI 测试验证当前预设传递和报告展示。HEVC 集成测试另生成 10-bit 且带 SDR/PQ/HLG 标签的短视频；这些合成测试验证元数据解释，不验证真实 HDR 场景、像素颜色准确性或色调映射质量。
 
 修复测试还覆盖 FPS 选择、四种模式的参数独立性、safe 条件组合和逐音轨选择、dry-run 无输出副作用、重名与并发保护、转码/复查失败的清理、取消后子进程回收、stderr 大量输出。真实转码测试使用 VFR、无音轨、多音轨、音频更长/更短、起始偏移和奇数分辨率样本；逐帧检查 CFR 间隔恒定及非 CFR 模式保留原帧间隔，检查 timestamp 消除开头负 DTS。累计音频 PTS 偏差样本验证 async 补偿有效、正弦波音调保持，以及正常 PTS 下不强行匹配两轨长度。
 
@@ -283,7 +428,7 @@ GUI 测试使用 Qt 自带的 QtTest 和无屏幕渲染平台，无需额外安�
 | `audio_shorter.mp4` | 视频 6 秒、音频 5.7 秒 |
 | `no_audio.mp4` | 30 FPS CFR，不包含音轨 |
 
-工具先在临时子目录生成并用 ffprobe 探测全部样本，再发布正式文件；生成/探测失败会清理临时数据，已存在的同名样本会被拒绝覆盖。重复手动生成时，请先自行移走旧样本，或指定新目录。发布使用同文件系统硬链接，与产品修复一样需要文件系统支持。
+工具先在临时子目录生成并用 ffprobe 探测全部样本，再发布正式文件；生成/探测失败会清理临时数据，已存在的同名样本会被拒绝覆盖。重复手动生成时，请先自行移走旧样本，或指定新目录。样本生成工具仍使用同文件系统硬链接，需要文件系统支持。
 
 样本工具与主 CLI 共用 Windows UTF-8 输出处理，控制台或重定向采用 GBK 等编码时，中文及 emoji 目录也能正常显示；重复生成时的拒绝覆盖提示同样适用。
 
@@ -316,8 +461,15 @@ gui/workers.py          QThread 调用核心，通过信号返回结果
 app/models.py           媒体、诊断、修复策略和执行计划数据结构
 app/ffmpeg_utils.py     工具查找、集中构建 FFmpeg 命令与子进程调用
 app/analyzer.py         轨道与容器信息解析、同步风险分析及阈值
-app/fixer.py            策略/FPS 选择、只读计划生成、执行、复查与安全发布
-app/presets.py          输出预设验证与 CLI/GUI 共用的验证报告
+app/deep_sync.py        流式时间戳统计、采样时钟拟合、同步模式与补偿资格
+app/timestamp_probe.py  有时限、记录上限和有限缓冲的 ffprobe 子进程读取
+app/media_profile.py    CLI/GUI 共用的输入媒体画像及字段状态展示
+app/compatibility.py    独立的输入兼容性诊断规则与共享报告，不控制修复
+app/color.py            独立颜色范围计划、颜色复查与共享计划说明
+app/repair_plan.py      策略/FPS、颜色、时序、逐音轨和容器决策与原因报告
+app/fixer.py            只读执行计划生成、执行、复查与安全发布
+app/output_validation.py  按 ExpectedOutputSpec 验证输出、时序退化与发布前文件检查
+app/presets.py          CLI/GUI 共用的分级报告与旧验证入口适配
 app/cli.py              命令行参数与中文报告
 tests/                  单元测试与真实 FFmpeg 集成测试
 tests/generate_samples.py 五类 6 秒样本的独立生成工具
@@ -328,3 +480,96 @@ tmp/                    本地缓存和测试临时文件
 ```
 
 尚未实现声音与画面内容比对或自动估算时钟速率差。
+
+### V2：RepairPlan 与 FFmpeg builder
+
+核心流程为 `AnalysisResult → select_repair_plan → RepairPlan → build_repair_command → FixPlan`。
+`RepairPlan` 是不可变的数据结构，描述视频编码、目标 FPS、帧率模式、像素格式、颜色转换、时间戳策略、各轨相对起点、逐音轨编码/采样率/同步策略，以及容器和 faststart。
+补边和旋转处理也由计划层确定。builder 不再读取 analyzer、选择颜色策略或按模式/预设分支；只把计划翻译成参数列表，并拒绝不支持或相互冲突的计划。
+
+自动选择（safe）沿用现有分析阈值：疑似 VFR 才启用 CFR；起点缺失、负值或明显偏移才启用 genpts；逐音轨 async 改由完整深度时间戳证据控制，长度差不再作为开启依据。Full → Limited 只在输入范围已知为 Full 时执行，Limited 不重复压缩。未知范围和不支持的 HDR 仍拒绝转换。
+
+为兼容现有正常用法，显式 `cfr`、`timestamp`、`audio-sync` 保留专项请求含义，Bilibili 保留 CFR / AAC 48 kHz 输出要求。这些决定分别标为 `explicit`、`preset`，不会伪装成 analyzer 发现的问题，也不会顺带打开其余专项修复。音轨长度差仍只是风险线索，不代表已确认累计漂移。
+
+`--fix --dry-run` 的 `Repair decisions` 报告逐项列出启用/禁用状态、Reason 和依据来源。CFR 所需的时间轴归一化与 genpts 单独说明；genpts 仅补缺失 PTS，不能重建所有损坏时间戳。
+
+`build_fix_command` 与 `select_strategy` 暂保留为旧调用的迁移接口，实际修复统一使用 `RepairPlan`。新功能应在计划层加入决策，在 builder 中加入对应表达；不要向 CLI/GUI 或旧接口继续添加模式参数拼接。
+
+`tests/test_repair_plan.py` 覆盖计划决策、逐轨偏移、禁用原因、非法计划、参数独立性和中文空格路径。`tests/snapshots/repair_commands.json` 保存 54 组完整 argv（只将输入/输出绝对路径替换为占位符）。本阶段明确更新其中两组 combined/safe，移除仅凭长度差启用的 async，其余 52 组保持原命令。运行测试不会自动更新快照。
+
+
+### V2：深度同步分析与渐进漂移
+
+```powershell
+# 保留快速元数据分析作为默认；深度分析也可以独立使用。
+.\.venv\Scripts\python.exe main.py "录屏 视频.mp4" --deep-analysis
+# 先查看估算漂移、每条音轨的实际策略与完整命令。
+.\.venv\Scripts\python.exe main.py "录屏 视频.mp4" --deep-analysis --fix --dry-run
+# 大型输入可调整资源预算；达到上限返回 partial，不自动软补偿。
+.\.venv\Scripts\python.exe main.py "录屏 视频.mp4" --deep-analysis --deep-timeout 180 --deep-max-records 2000000
+```
+
+普通模式只读取 stream/container metadata，仍保留 duration、start_time、time_base、average/nominal FPS 的风险提示。深度模式将证据附加到 `AnalysisResult.deep_sync`，分别读取：
+
+- 全文件 packet 的 PTS/DTS：识别缺失与 DTS 回退、明显长间隔；视频 packet PTS 在 B 帧解码顺序中可以合法回退，不能据此判损坏。
+- 全文件音频 decoded frames 的 PTS 与 `nb_samples`：以整数 ticks × time_base 优先恢复秒数，缺少 ticks 时才用 `pts_time`。采样时钟采用已知 sample_rate；缺失或变化的采样率不作为自动补偿依据。缺失 PTS 的帧仍计入已解码采样数，避免把缺少时间戳误算为采样时钟漂移。
+- 第一条非封面视频在开头、中间和末尾等五个位置各约 4 秒的 decoded frame timestamps：排除 seek 提前落到关键帧的 preroll，窗口边界不算突跳，检查真实展示间隔是否变化。短视频或未知时长只检查可确定的开头窗口。
+
+渐进漂移的拟合信号是 `x = 累计已解码采样数 / sample_rate` 与 `y = (当前 PTS − 首帧 PTS) − x`。使用在线协方差计算斜率、R² 和拟合 RMS，并保存有限数量的观测点。`drift_ppm = slope × 1e6`；末端估算漂移为斜率乘已观察采样时长，绝不使用音视频 duration 比例计算速度。正值表示 PTS 时间轴比采样时钟更长；它不是直接测出的“声音比画面晚多少”。报告中的分钟／毫秒列表也是相对采样时钟的观测。
+
+`Sync pattern` 可同时包含多个候选：
+
+| 候选 | 证据及边界 |
+| --- | --- |
+| STATIC_OFFSET | 快速分析只能提示起始偏移候选；深度分析中还要求完整、至少 60 秒且无明显斜率的音频时钟证据。正 offset 表示音频起点较晚，不能证明全程内容偏移量。 |
+| PROGRESSIVE_DRIFT | 至少 60 秒、累计拟合漂移至少 50 ms、R² ≥ 0.98、低拟合残差，且没有缺失/突跳。仅指 PTS 与采样时钟的渐进分离。 |
+| VFR_SUSPECTED | 元数据差异或抽样视频帧间隔变化；未抽样区间不能排除 VFR。 |
+| TIMESTAMP_ANOMALY | 缺失 PTS、DTS 回退或时间间隔突跳；不把一个阶跃拟合成时钟漂移。 |
+| UNKNOWN | 没有足够证据；不等于文件健康或实际播放同步。 |
+
+软补偿额外要求扫描成功、视频抽样有足够帧且无已知时间戳异常、对应音轨证据完整，并且绝对漂移不超过 **500 ppm（0.05%）**。采用 `aresample` 的持续软补偿，最大比例 0.0005，禁止硬补静音和硬裁剪；保留音频 PTS 间隔供 resampler 比较。视频帧、播放速度与时长不按音轨长度改变，也不使用 `atempo`、`asetrate` 或 `-shortest`。RepairPlan 记录每条音轨的估算漂移、ppm、补偿上限与实际选择，dry-run 展示同一组决定。超过上限、明显突跳或 partial 扫描只提示检查，不自动做较大变速。
+
+`async=1` 的 fill/trim 与大于 1 时可用的持续补偿不同；`min_hard_comp` 划分硬/软补偿，`max_soft_comp` 控制软补偿比例。实现参考 [FFmpeg 重采样文档](https://ffmpeg.org/ffmpeg-resampler.html#Resampler-Options)。seek 可能提前定位，帧数与时间窗口不能假定精确，参考 [ffprobe read_intervals 文档](https://ffmpeg.org/ffprobe.html#Main-options)。
+
+**资源边界：**默认总预算 120 秒、1,000,000 条输出记录、最多 32 条选中轨道；分别为 packet、音频 frame 和视频窗口预留时间，前面未耗用的预算可由后续扫描复用。超时、超限、ffprobe 解码错误或无有效抽样帧会显式报告覆盖不足。子进程结束清理可能额外需要数秒。compact 输出逐行处理，队列最多 64 行，每行最多 16384 个字符，stderr 仅保留尾部；每轨只保存在线统计及最多 129 个检查点。内存不会随帧数线性增长。取消、读取失败和预算终止均回收 ffprobe；路径仍使用无 shell 的 argv 列表。
+
+软补偿假设音频 PTS 是可信参考，只改善 PTS 与采样数的一致性。若音频与视频被各自重新标成内部一致的时间戳，真正的内容漂移可能完全没有出现在这些统计里；物理录制时钟问题和事件对齐仍需专门参考或人工播放确认。
+
+新增单元测试覆盖正负线性漂移、固定偏移、突跳、时钟回退、B 帧重排、粗时间基、未知字段、逐音轨选择、部分扫描、内存上界、超时和取消。真实 FFmpeg 测试生成正负 250 ppm 的 240 秒录屏，检查估算值、补偿后时钟残差、视频端点/帧数/帧率、音频采样长度和 440 Hz 音调；另覆盖固定偏移、突跳和元数据帧率相同时的 VFR。
+## V2 Input Compatibility Matrix 与真实素材回归
+
+本阶段只扩充测试，不增加产品修复功能。`tests/media_factory/` 动态生成 8 个样本，每个视频约 4 秒，音频为 3/4/5 秒或无音轨；分辨率 256 × 128，单文件限制 5 MiB（当前样本均不足 1 MiB）。画面包含运动图案及固定 Y/U/V 色阶。每个样本分别运行通用和 Bilibili 预设，共 16 个矩阵用例。
+
+覆盖目标 A–O：H.264/HEVC、Limited/Full、30/60/60000÷1001 FPS、基于实际帧时间戳的 VFR、音频短于/长于视频、无音轨、44.1/48 kHz AAC、中文文件名和空格路径。生成参数只是意图，类别覆盖必须由实际 ffprobe 字段和帧时间戳确认。当前 FFmpeg 把生成的 H.264 Full-range 解码为 `yuvj420p + pc`，该语义路径会测试，但不会冒充字面上的 B 类 `H264 / yuv420p / full`；若没有这种实际输入，B 类显示 **NOT TESTED**。换用其他 FFmpeg 构建或放入真实样本后，报告按实际观察更新。
+
+一条命令依次运行全部单元测试、集成测试及可选真实素材测试，并合并到一个新的报告目录：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m tests.media_factory.run_regression
+```
+
+也可以分别运行（每次默认创建独立报告，避免旧结果冒充本轮结果）：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q -ra -m "not integration"
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q -ra -m "integration and not private"
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q -ra -m private
+# 只运行新的合成矩阵：
+.\.venv\Scripts\python.exe -X utf8 -m pytest -q tests/test_compatibility_matrix.py
+```
+
+`conftest.py` 根据测试模块标记集成测试：真实 FFmpeg 集成模块、Qt GUI 集成、已有样本生成/回归模块和新矩阵模块属于 `integration`；真实文件测试还标记 `private`。其余为单元测试。普通 `pytest` 仍执行全部现有测试和新增测试。
+
+报告写入忽略的 `tmp/compatibility-reports/<本次运行编号>/matrix.md` 和 `matrix.json`，控制台打印完整路径。报告包括三组测试计数、A–O 实际覆盖、每个样本/预设的 Analyze、Compatibility、Repair、Validate、Color、Duration、Source unchanged，以及输入画像、兼容性诊断、ExpectedOutputSpec 和 Post Repair Report 的文本/JSON 证据。各阶段从 **NOT TESTED** 开始；跳过、未运行、缺少编码器都不会算作 PASS。任一失败令测试和总运行退出码失败。缺少可选真实素材会跳过，测试退出码为零也不代表所有类别已经覆盖。
+
+合成样本的颜色验证比较解码后的色阶数值，并含仅改标签、重复范围转换的反例；不能只凭输出 Limited 标签通过。长短音轨原有差异未恶化时，现有输出验证可给出 WARNING，该状态原样显示，不改写成 PASS。同一个 A–O 类别涉及多个样本时按最严重状态汇总，所以某个正常类别也可能因同时包含合法长短音轨样本而显示 WARNING；逐样本表列出具体原因。
+
+同一样本只执行部分预设时，已观察类别的完整覆盖仍记为 NOT TESTED，未执行行不会伪造探测结果。Repair 仅在修复及文件发布成功后记为 PASS；验证失败时保留实际的时长检查和报告。颜色断言要求完整且有限的 Y/U/V 色阶值，真实素材抽样的旋转行为直接读取 RepairPlan。
+
+### Real Sample Regression
+
+将合法取得的真实录屏放进 `samples/private/`（可以有子目录）。该目录已加入 `.gitignore`，不提交真实媒体。自动发现 `.mp4/.mkv/.mov/.m4v/.avi/.webm/.ts/.mts/.m2ts/.nut`，不存在素材时输出明确的 **Real Sample Regression: NOT TESTED** 并跳过。
+
+真实样本默认完整执行 `safe + general`，不是抽取短片假装测试整段。测试会读取 analyzer、核对兼容性诊断与实际字段、修复、重新 ffprobe、验证 ExpectedOutputSpec 和时长退化，并流式计算修复前后源文件 SHA-256。输出只写入项目 `tmp/` 下独立临时目录，成功和失败后均清理；报告保留。长视频可能需要较长转码时间和足够临时空间，不会复制整个源文件到仓库，也不会一次加载全部帧 JSON。
+
+真实文件的像素检查抽取首个可解码视频帧，将独立按输入范围生成的 Limited 参考与输出统一缩小到 128 × 72 比较 Y/U/V 平均绝对误差（每平面不超过 3 个码值）。这是**抽样颜色检查**，不证明整段颜色准确或真实声音/画面事件同步；异常标签、HDR、损坏或当前能力不支持的输入会如实失败，不为“兼容”静默跳过。用合成文件验证真实回归机制的自测不会计入真实 Steam 素材覆盖。

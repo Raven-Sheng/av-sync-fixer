@@ -1,10 +1,6 @@
 """输出预设的复查和共享报告；CLI 与 GUI 不自行判断是否达标。"""
 
-from app.analyzer import (
-    absolute_difference, compare_threshold, fps_to_float, matches_target_fps,
-    DURATION_MODERATE_THRESHOLD, START_TIME_TOLERANCE_SECONDS,
-)
-from app.ffmpeg_utils import BILIBILI_SAMPLE_RATE, VIDEO_PIXEL_FORMAT
+from app.analyzer import absolute_difference, fps_to_float
 from app.models import AnalysisResult, FixPlan, OutputValidation
 
 
@@ -12,47 +8,19 @@ PRESET_LABELS = {"general": "通用", "bilibili": "Bilibili"}
 
 
 def validate_bilibili_output(plan: FixPlan, after: AnalysisResult) -> OutputValidation:
-    errors, warnings = [], []
-    formats = (after.container or "").split(",")
-    brand = (after.major_brand or "").strip().lower()
-    if "mp4" not in formats or not (brand.startswith("iso") or brand in {"mp41", "mp42", "avc1", "m4v"}):
-        errors.append(f"无法确认 MP4 容器（格式 {after.container or '未知'}，major_brand {after.major_brand or '未知'}）。")
-    video = after.videos[0] if after.videos else None
-    original = plan.source.videos[0]
-    target = plan.strategy.target_fps
-    if len(after.videos) != 1 or video is None or video.codec != "h264":
-        errors.append("输出必须包含一条 H.264 视频轨。")
-    if video:
-        if video.pixel_format != VIDEO_PIXEL_FORMAT:
-            errors.append(f"像素格式须为 {VIDEO_PIXEL_FORMAT}，实际为 {video.pixel_format or '未知'}。")
-        if (video.width, video.height) != (original.width, original.height):
-            errors.append(f"分辨率未保持原尺寸 {original.width} × {original.height}。")
-        if not matches_target_fps(video, target):
-            errors.append(f"平均/标称 FPS 未同时匹配 CFR 目标 {target}。")
-        if video.duration is None:
-            warnings.append("视频时长未知，不能完成轨道长度核对。")
-    if len(after.audios) != len(plan.source.audios):
-        errors.append("输出音轨数量与输入不一致。")
-    for position, audio in enumerate(after.audios, 1):
-        if audio.codec != "aac" or audio.sample_rate != BILIBILI_SAMPLE_RATE:
-            errors.append(f"音轨 {position} 须为 AAC / {BILIBILI_SAMPLE_RATE} Hz，实际为 {audio.codec or '未知'} / {audio.sample_rate or '未知'}。")
-        difference = absolute_difference(video.duration if video else None, audio.duration)
-        if difference is None:
-            warnings.append(f"音轨 {position} 的长度差未知，无法确认时长是否接近。")
-        elif compare_threshold(difference, DURATION_MODERATE_THRESHOLD) >= 0:
-            warnings.append(f"音轨 {position} 与视频长度差仍为 {difference:.3f} 秒，同步风险未消除；未强行截断或拉伸内容。")
-        start_difference = absolute_difference(video.start_time if video else None, audio.start_time)
-        if start_difference is not None and compare_threshold(start_difference, START_TIME_TOLERANCE_SECONDS) > 0:
-            warnings.append(f"音轨 {position} 与视频的起始偏移仍为 {start_difference:.3f} 秒，请确认是否为预期偏移。")
-    for stream in (*after.videos, *after.audios):
-        if stream.start_time is None or stream.start_time < 0:
-            warnings.append("输出存在未知或负起点，需检查时间戳。")
-            break
-    return OutputValidation(plan.preset, after, target, tuple(errors), tuple(warnings))
+    """Legacy metadata-only entry point; both presets now share the spec validator."""
+    from app.repair_plan import expected_output_spec, plan_from_strategy
+    from app.output_validation import validate_output
+    repair = plan.repair or plan_from_strategy(plan.source, plan.strategy, preset=plan.preset)
+    return validate_output(plan.expected or expected_output_spec(repair, plan.source), after)
 
 
 def format_validation_report(result: OutputValidation) -> str:
     info = result.media
+    summary = ["Post Repair Report", *[f"{name}: {level.value}" for name, level in result.sections.items()],
+               f"Overall: {result.overall.value}"]
+    if info is None:
+        return "\n".join([*summary, "输出验证报告：输出不可读取。", *[f"不符合项：{e}" for e in result.errors]])
     video = info.videos[0] if info.videos else None
     def seconds(value):
         return "未知" if value is None else f"{value:.3f} 秒"
@@ -60,14 +28,28 @@ def format_validation_report(result: OutputValidation) -> str:
         number = fps_to_float(value)
         return "未知" if number is None else f"{number:g} FPS"
     lines = [
+        *summary,
         f"输出验证报告 · {PRESET_LABELS[result.preset]}",
         f"容器：{info.container or '未知'}（major_brand：{info.major_brand or '未知'}）",
         f"视频编码：{video.codec if video and video.codec else '未知'}",
         f"像素格式：{video.pixel_format if video and video.pixel_format else '未知'}",
+        f"颜色范围：{video.color_range if video and video.color_range else '未知'}（目标 {result.expected.video.color.output_range if result.expected else '未指定'}）",
+        f"颜色矩阵：{video.color_space if video and video.color_space else '未知'}",
+        f"传递特性：{video.color_transfer if video and video.color_transfer else '未知'}",
+        f"原色：{video.color_primaries if video and video.color_primaries else '未知'}",
         f"分辨率：{video.width} × {video.height}" if video and video.width and video.height else "分辨率：未知",
-        f"帧率：平均 {fps(video.avg_frame_rate if video else None)} / 标称 {fps(video.r_frame_rate if video else None)}；CFR 目标 {result.target_fps}",
+        f"帧率：平均 {fps(video.avg_frame_rate if video else None)} / 标称 {fps(video.r_frame_rate if video else None)}；CFR 目标 {result.target_fps if result.target_fps is not None else '未启用'}",
         f"视频时长：{seconds(video.duration if video else None)}",
     ]
+    if result.expected:
+        spec = result.expected
+        lines.extend([
+            f"计划视频：{spec.video.codec} / {spec.video.pixel_format} / {spec.video.fps_mode}；目标 FPS {spec.video.target_fps or '保持'}",
+            f"计划封装：{spec.container.format} / faststart={spec.container.faststart}",
+            f"时长容差：{spec.duration_tolerance:.3f} 秒；长度差恶化容差：{spec.sync_regression_tolerance:.3f} 秒；相对起点容差：{spec.start_tolerance:.3f} 秒。",
+        ])
+        lines.extend(f"计划音轨 {i}：{a.codec} / {a.sample_rate or '输入（未知）'} Hz"
+                     for i, a in enumerate(spec.audios, 1))
     if not info.audios:
         lines.append("音频编码 / 采样率 / 时长 / 轨道差异：无音频轨（输入无音轨时不自动生成）")
     for position, audio in enumerate(info.audios, 1):
@@ -76,10 +58,13 @@ def format_validation_report(result: OutputValidation) -> str:
             f"  音频时长：{seconds(audio.duration)}；轨道差异：{seconds(absolute_difference(video.duration if video else None, audio.duration))}",
         ])
     if result.errors:
-        lines.append("结论：不符合预设编码要求，未发布最终文件。")
+        lines.append("结论：不符合预设 / RepairPlan 输出要求，未发布最终文件。")
     else:
-        lines.append("结论：预设编码要求通过。" if not result.warnings else "结论：预设编码要求通过，但仍有需要检查的同步风险。")
+        lines.append("结论：预设编码要求通过，RepairPlan 输出验证通过。" if not result.warnings else "结论：预设编码要求通过，但仍有需要检查的颜色、时序或其他待核实项。")
     lines.extend(f"不符合项：{message}" for message in result.errors)
     lines.extend(f"提示：{message}" for message in result.warnings)
-    lines.append("CFR 由 fps 滤镜生成，复查平均/标称 FPS；元数据验证不能证明声音与画面内容同步。")
+    if result.target_fps is not None:
+        lines.append("CFR 由 fps 滤镜生成，复查平均/标称 FPS；元数据验证不能证明声音与画面内容同步。")
+    else:
+        lines.append("本次未强制 CFR；元数据验证不能证明声音与画面内容同步。")
     return "\n".join(lines)

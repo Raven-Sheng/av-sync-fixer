@@ -1,7 +1,7 @@
 """仅负责参数解析、结果展示及用户可读错误。"""
 
 import argparse
-from fractions import Fraction
+import math
 import sys
 import os
 from pathlib import Path
@@ -11,38 +11,12 @@ from app.analyzer import analyze, diagnose, fps_to_float
 from app.ffmpeg_utils import MediaError, progress_percent, DEFAULT_OUTPUT_PRESET, OUTPUT_PRESETS
 from app.fixer import estimate_duration, execute_fix, prepare_fix, DEFAULT_REPAIR_MODE, REPAIR_MODES
 from app.models import AnalysisResult, StreamInfo, SyncDiagnosis, FixResult
+from app.media_profile import duration_text, rate_text, format_media_profile
+from app.compatibility import diagnose_compatibility, format_compatibility_report
+from app.color import color_plan_text
+from app.repair_plan import format_repair_decisions
+from app.deep_sync import format_deep_report, DEFAULT_DEEP_TIMEOUT, DEFAULT_MAX_RECORDS
 from app.presets import PRESET_LABELS, format_validation_report
-
-
-def duration_text(duration: float | None) -> str:
-    return "未知" if duration is None else f"{duration:.6f} 秒"
-
-
-def rate_text(rate: Fraction | None) -> str:
-    fps = fps_to_float(rate)
-    return "未知" if fps is None else f"{fps:.6f} fps（{rate}）"
-
-
-def stream_lines(stream: StreamInfo, kind: str) -> list[str]:
-    index = stream.index if stream.index is not None else "未知"
-    lines = [f"{kind}轨道 #{index}", f"  {kind}编码器（codec_name）：{stream.codec or '未知'}"]
-    if kind == "视频":
-        resolution = f"{stream.width} × {stream.height}" if stream.width and stream.height else "未知"
-        lines.extend([
-            f"  分辨率：{resolution}",
-            f"  视频帧率（avg_frame_rate）：{rate_text(stream.avg_frame_rate)}",
-            f"  视频帧率（r_frame_rate）：{rate_text(stream.r_frame_rate)}",
-        ])
-    if kind == "音频":
-        sample_rate = f"{stream.sample_rate} Hz" if stream.sample_rate is not None else "未知"
-        lines.append(f"  音频采样率：{sample_rate}")
-    source = f"（{stream.duration_source}）" if stream.duration_source else ""
-    lines.extend([
-        f"  {kind}轨时长：{duration_text(stream.duration)}{source}",
-        f"  {kind} time_base：{stream.time_base or '未知'}",
-        f"  {kind} start_time：{duration_text(stream.start_time)}",
-    ])
-    return lines
 
 
 def diagnosis_lines(diagnosis: SyncDiagnosis) -> list[str]:
@@ -77,6 +51,8 @@ def diagnosis_lines(diagnosis: SyncDiagnosis) -> list[str]:
         f"起始时间差：{duration_text(diagnosis.start_time_diff)}",
         f"时间戳分析：{start_status}",
         f"同步风险：{risk}（等级按轨道长度差评估；帧率和起始偏移单独提示）",
+        f"Sync pattern (候选): {', '.join(diagnosis.patterns)}",
+        "渐进漂移与时钟偏差需要深度时间戳证据；时长差本身不足以判定。可使用 --deep-analysis。",
         "潜在原因：",
     ]
     lines.extend(f"- {cause}" for cause in diagnosis.potential_causes)
@@ -88,21 +64,8 @@ def diagnosis_lines(diagnosis: SyncDiagnosis) -> list[str]:
     return lines
 
 
-def format_report(result: AnalysisResult) -> str:
-    size = "未知" if result.file_size is None else f"{result.file_size} 字节（{result.file_size / 1024**2:.2f} MiB）"
-    lines = [
-        f"文件名：{result.path.name}",
-        f"文件路径：{result.path}",
-        f"文件大小：{size}",
-        "工具检查：ffmpeg、ffprobe 均可用",
-        f"容器格式：{result.container or '未知'}",
-        f"总时长（容器）：{duration_text(result.container_duration)}",
-    ]
-    for kind, streams in (("视频", result.videos), ("音频", result.audios)):
-        if not streams:
-            lines.append(f"{kind}轨道：无")
-        for stream in streams:
-            lines.extend(stream_lines(stream, kind))
+def format_report(result: AnalysisResult, *, preset: str = DEFAULT_OUTPUT_PRESET) -> str:
+    lines = [format_media_profile(result), "工具检查：ffmpeg、ffprobe 均可用"]
     lines.extend(diagnosis_lines(diagnose(result)))
     lines.extend([
         "",
@@ -110,6 +73,9 @@ def format_report(result: AnalysisResult) -> str:
         "音视频 time_base 不同本身不代表异常，起始时间已按秒比较。",
         "诊断仅基于元数据线索，不能确认实际音画不同步；不修改源文件。",
     ])
+    lines.extend(["", format_compatibility_report(diagnose_compatibility(result, preset=preset))])
+    if result.deep_sync:
+        lines.append(format_deep_report(result.deep_sync))
     return "\n".join(lines)
 
 
@@ -156,6 +122,12 @@ def run_fix(source: AnalysisResult, *, mode: str = DEFAULT_REPAIR_MODE, dry_run:
         selected.append("audio-sync（音轨序号 " + ", ".join(str(i + 1) for i in strategy.audio_sync_tracks) + "）")
     print(f"\n修复模式：{mode}\n实际策略：{', '.join(selected) or '兼容性转码'}")
     print(f"输出预设：{PRESET_LABELS[preset]}")
+    if plan.repair:
+        print(format_repair_decisions(plan.repair))
+    if plan.color:
+        print(color_plan_text(plan.color))
+        for warning in plan.color.warnings:
+            print(f"颜色说明：{warning}")
     for reason in strategy.reasons:
         print(f"选择依据：{reason}")
     for warning in strategy.warnings:
@@ -214,12 +186,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=REPAIR_MODES, default=None, help=f"修复模式，默认 {DEFAULT_REPAIR_MODE}；需要 --fix")
     parser.add_argument("--preset", choices=OUTPUT_PRESETS, default=None, help="输出预设，默认 general（通用）；需要 --fix")
     parser.add_argument("--dry-run", action="store_true", help="配合 --fix 仅分析并预览命令，不执行转码")
+    parser.add_argument("--deep-analysis", action="store_true", help="流式扫描 packets / 音频 frames，并抽样视频帧时间戳")
+    parser.add_argument("--deep-timeout", type=float, help=f"深度扫描总时限（秒），默认 {DEFAULT_DEEP_TIMEOUT:g}")
+    parser.add_argument("--deep-max-records", type=int, help=f"深度扫描总记录上限，默认 {DEFAULT_MAX_RECORDS}")
     args = parser.parse_args(argv)
     if not args.fix and (args.mode is not None or args.preset is not None or args.dry_run):
         parser.error("--mode、--preset 和 --dry-run 需要与 --fix 一起使用")
+    if not args.deep_analysis and (args.deep_timeout is not None or args.deep_max_records is not None):
+        parser.error("--deep-timeout 和 --deep-max-records 需要 --deep-analysis")
+    if args.deep_timeout is not None and (not math.isfinite(args.deep_timeout) or args.deep_timeout <= 0):
+        parser.error("--deep-timeout 必须为有限正数")
+    if args.deep_max_records is not None and args.deep_max_records <= 0:
+        parser.error("--deep-max-records 必须为正整数")
     try:
-        result = analyze(args.video)
-        print(format_report(result), flush=True)
+        if args.deep_analysis:
+            print("深度分析中：流式读取时间戳；达到预算后会返回部分结果。", flush=True)
+            result = analyze(args.video, deep_analysis=True, deep_timeout=args.deep_timeout,
+                             deep_max_records=args.deep_max_records)
+        else:
+            result = analyze(args.video)
+        print(format_report(result, preset=args.preset or DEFAULT_OUTPUT_PRESET), flush=True)
         if args.fix:
             run_fix(result, mode=args.mode or DEFAULT_REPAIR_MODE, dry_run=args.dry_run,
                     preset=args.preset or DEFAULT_OUTPUT_PRESET)

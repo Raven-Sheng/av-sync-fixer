@@ -55,7 +55,8 @@ def sample_options(spec: SampleSpec) -> list[str]:
             "-fps_mode:v", "vfr",
         ])
     options.extend([
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-color_range", "tv",
+        "-bsf:v", "h264_metadata=video_full_range_flag=0",
         "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-f", "mp4",
     ])
     return options
